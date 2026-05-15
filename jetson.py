@@ -9,37 +9,25 @@ import requests
 import feedparser
 import re
 import sounddevice as sd
-import numpy as np
 from num2words import num2words
 from vosk import Model, KaldiRecognizer
-import io
-import wave
-
-# Импортируем Python-API Piper
-from piper.voice import PiperVoice
+import soundfile as sf
+import subprocess
 
 # ====================== НАСТРОЙКИ ======================
-PIPER_MODEL_PATH = r"synthModel/mari.onnx"  # Путь к модели
-PIPER_CONFIG_PATH = r"synthModel/mari.onnx.json"  # Путь к конфигу
+PIPER_MODEL = "synthModel/mari.onnx"
+PIPER_CONFIG = "synthModel/mari.onnx.json"
 
 API_WEATHER_KEY = "a16151d6d074f7a37a032f50f98a760c"
 CITY = "Novosibirsk"
 NEWS_RSS_URL = "https://lenta.ru/rss/news"
 
 # ====================== ИНИЦИАЛИЗАЦИЯ ======================
-print("Инициализация Vosk...")
+print("Загрузка Vosk...")
 vosk_model = Model("model")
 rec = KaldiRecognizer(vosk_model, 16000)
 
-print("Загрузка модели Piper TTS в оперативную память (это займет пару секунд)...")
-# Модель загружается ОДИН РАЗ, устраняя задержку при каждом ответе
-try:
-    voice = PiperVoice.load(PIPER_MODEL_PATH, config_path=PIPER_CONFIG_PATH)
-    print("Piper TTS готов к потоковой генерации!")
-except Exception as e:
-    print(f"Ошибка загрузки Piper: {e}")
-    sys.exit(1)
-
+print("Piper CLI готов")
 
 # ====================== HARDWARE ======================
 class Hardware:
@@ -53,8 +41,9 @@ class Hardware:
             GPIO.setup([self.LED_R, self.LED_G, self.LED_B, self.RELAY_LIGHT], GPIO.OUT, initial=GPIO.LOW)
             self.GPIO = GPIO
             self.HAS_GPIO = True
-        except ImportError:
-            pass
+            print("Jetson.GPIO инициализирован")
+        except:
+            print("Jetson.GPIO не найден — режим эмуляции")
 
     def set_led(self, mode):
         if not self.HAS_GPIO: return
@@ -71,13 +60,12 @@ hw = Hardware()
 
 
 # ====================== МОЗГ ======================
-# ====================== МОЗГ ======================
 class LeraBrain:
     def __init__(self, tts_queue):
         self.name = "лера"
         self.tts_queue = tts_queue
         self.alarms = []
-        self.timers = {}  # Словарь для активных таймеров: {минуты: объект_таймера}
+        self.timers = {}
         self.listening_mode = False
 
     def declension(self, n, one, two, five):
@@ -153,13 +141,9 @@ class LeraBrain:
             nums.append(current)
         return nums
 
-    # --- ИЗМЕНЕННЫЙ БЛОК ТАЙМЕРА ---
     def start_timer(self, minutes):
-        # Если таймер на это время уже есть, отменим старый
         if minutes in self.timers:
             self.timers[minutes].cancel()
-
-        # Создаем объект Timer (выполнит _timer_end через X секунд)
         t = threading.Timer(minutes * 60, self._timer_end, [minutes])
         self.timers[minutes] = t
         t.start()
@@ -170,7 +154,6 @@ class LeraBrain:
         self.timers.pop(minutes, None)
 
     def cancel_timer(self, text):
-        # Если в фразе есть число (например, "отмени таймер на 5 минут")
         nums = self.words_to_numbers(text)
         if nums:
             m = nums[0]
@@ -179,18 +162,13 @@ class LeraBrain:
                 del self.timers[m]
                 return f"Таймер на {m} минут отменён."
             return f"Таймер на {m} минут не найден."
-
-        # Если числа нет, но таймер всего один — отменяем его
         if len(self.timers) == 1:
             m, t = self.timers.popitem()
             t.cancel()
             return f"Таймер на {m} минут отменён."
         elif len(self.timers) > 1:
-            return "У вас запущено несколько таймеров. Уточните время."
-
+            return "У вас несколько таймеров. Уточните время."
         return "Активных таймеров нет."
-
-    # ------------------------------
 
     def set_alarm(self, time_str):
         match = re.search(r'(\d{1,2}):?(\d{2})?', time_str)
@@ -226,14 +204,12 @@ class LeraBrain:
 
         self.listening_mode = False
 
-        # Обработка отмены
         if "будильник" in text and any(w in text for w in ["выключи", "отмени", "убери", "стоп"]):
             return self.cancel_alarms()
 
         if "таймер" in text and any(w in text for w in ["выключи", "отмени", "убери", "стоп"]):
             return self.cancel_timer(text)
 
-        # Обычные команды
         if "погода" in text: return self.get_weather()
         if "новости" in text: return self.get_news()
         if "время" in text or "час" in text or "времени" in text: return self.get_time()
@@ -255,6 +231,8 @@ class LeraBrain:
 
         return "Не поняла команду."
 
+
+# ====================== СИНТЕЗ ======================
 def synth_and_say(text):
     if not text:
         return
@@ -265,32 +243,32 @@ def synth_and_say(text):
     print(f"Лера говорит: {text}")
 
     try:
-        # 1. Создаем буфер в памяти
-        byte_io = io.BytesIO()
+        result = subprocess.run([
+            "piper/piper",
+            "--model", PIPER_MODEL,
+            "--config", PIPER_CONFIG,
+            "--length_scale", "1.1",
+            "--output_file", "temp.wav"
+        ], 
+        input=text.encode('utf-8'), 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.PIPE)
 
-        # 2. Оборачиваем его в объект wave, который ждет Piper
-        with wave.open(byte_io, "wb") as wav_file:
-            # Устанавливаем параметры (Piper сам их заполнит, но объект нужен такой)
-            # Теперь вызываем функцию, передавая этот объект
-            voice.synthesize_wav(text, wav_file)
+        if result.returncode != 0:
+            print(f"Piper ошибка: {result.stderr.decode('utf-8', errors='ignore')}")
+            return
 
-        # 3. Получаем готовые данные
-        wav_bytes = byte_io.getvalue()
+        data, sr = sf.read("temp.wav")
+        sd.play(data, sr)
+        sd.wait()
 
-        # 4. Превращаем в массив для воспроизведения
-        # Пропускаем заголовок (44 байта), чтобы не было шума
-        audio_np = np.frombuffer(wav_bytes[44:], dtype=np.int16)
-
-        if len(audio_np) > 0:
-            sd.play(audio_np, samplerate=voice.config.sample_rate)
-            sd.wait()
-        else:
-            print("Предупреждение: пустой поток аудио.")
+        if os.path.exists("temp.wav"):
+            os.remove("temp.wav")
 
     except Exception as e:
-        print(f"Ошибка синтеза: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Ошибка Piper: {e}")
+
+
 # ====================== ЗАПУСК ======================
 data_queue = queue.Queue()
 tts_queue = queue.Queue()
@@ -298,48 +276,38 @@ brain = LeraBrain(tts_queue)
 
 threading.Thread(target=brain.background_tasks_checker, daemon=True).start()
 
-
 def callback(indata, frames, time, status):
     data_queue.put(bytes(indata))
 
+print("\nЛера запущена. Говорите 'Лера' для активации.\n")
 
-print("\nГолосовой помощник 'Лера' запущен.")
-print("Скажите 'Лера', чтобы активировать.\n")
-
-# Основной цикл
 with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype='int16', channels=1, callback=callback) as stream:
     while True:
-        # Проверка фоновых уведомлений (будильники/таймеры)
         try:
             bg_message = tts_queue.get_nowait()
-            stream.stop()  # Отключаем микрофон, чтобы Лера не слушала саму себя
+            stream.stop()
             hw.set_led("SPEAK")
             synth_and_say(bg_message)
             hw.set_led("IDLE")
-            stream.start()  # Включаем микрофон обратно
+            stream.start()
         except queue.Empty:
             pass
 
-        # Обработка распознавания речи
         try:
             data = data_queue.get(timeout=0.1)
             if rec.AcceptWaveform(data):
                 res = json.loads(rec.Result())
                 recognized = res.get("text", "").strip()
 
-                if not recognized:
-                    continue
-
-                print(f"Распознано: {recognized}")
-
-                hw.set_led("LISTEN")
-                response = brain.handle(recognized)
-
-                if response:
-                    stream.stop()  # Отключаем микрофон
-                    hw.set_led("SPEAK")
-                    synth_and_say(response)
-                    hw.set_led("IDLE")
-                    stream.start()  # Включаем микрофон
+                if recognized:
+                    print(f"Распознано: {recognized}")
+                    hw.set_led("LISTEN")
+                    response = brain.handle(recognized)
+                    if response:
+                        stream.stop()
+                        hw.set_led("SPEAK")
+                        synth_and_say(response)
+                        hw.set_led("IDLE")
+                        stream.start()
         except queue.Empty:
             continue
