@@ -244,7 +244,7 @@ def synth_and_say(text):
 
     try:
         result = subprocess.run([
-            "piper",
+            "piper/piper",
             "--model", PIPER_MODEL,
             "--config", PIPER_CONFIG,
             "--length_scale", "1.1",
