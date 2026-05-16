@@ -211,7 +211,7 @@ class LeraBrain:
             return self.cancel_timer(text)
 
         if "погода" in text: return self.get_weather()
-        if "новости" in text: return self.get_news()
+        if "новости" in text or "новость" in text: return self.get_news()
         if "время" in text or "час" in text or "времени" in text: return self.get_time()
 
         if "таймер" in text:
