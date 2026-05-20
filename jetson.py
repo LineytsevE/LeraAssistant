@@ -27,7 +27,7 @@ rec = KaldiRecognizer(vosk_model, 16000)
 TUYA_DEVICE_ID = 'bf8f380f2898553652rjvf'
 TUYA_IP ='192.168.0.12'
 TUYA_LOCAL_KEY = r"""#PF*m3=>f>}cKh`}"""
-TUYA_VERSION = 3.4
+TUYA_VERSION = 3.5
 
 # --- КЛАСС БЫСТРОГО СИНТЕЗА ---
 class FastPiper:
